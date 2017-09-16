@@ -6,7 +6,8 @@
 Workflow for doing preprocessing
 that FMRIPREP doesn't complete, and derives standardized residuals from bold.
 '''
-
+# Things I should learn more about:
+# regex
 from __future__ import print_function, division, absolute_import, unicode_literals
 import argparse
 import os
@@ -18,7 +19,7 @@ from bids.grabbids import BIDSLayout
 import niworkflows.nipype.interfaces.io as nio
 import niworkflows.nipype.pipeline.engine as pe
 from niworkflows.nipype import config as ncfg
-from niworkflows.nipype.interfaces.utility import IdentityInterface
+from niworkflows.nipype.interfaces.utility import IdentityInterface, Rename
 from niworkflows.nipype.interfaces.fsl import ImageStats, MultiImageMaths, SUSAN
 from niworkflows.nipype.interfaces.fsl.utils import FilterRegressor
 from niworkflows.nipype.interfaces.fsl.maths import MeanImage
@@ -374,7 +375,7 @@ def init_single_subject_wf(subject_id, ses_id, result_dir, deriv_pipe_dir,
         name='outputnode')
 
     datasink = pe.Node(nio.DataSink(), name='datasink')
-    subject_outdir = "sub-{}.ses-{}.func.task-{}".format(subject_id, ses_id, task_id)
+    subject_outdir = "sub-{}.ses-{}.func".format(subject_id, ses_id)
     datasink.inputs.base_directory = result_dir
 
     # Set input nodes
@@ -384,17 +385,26 @@ def init_single_subject_wf(subject_id, ses_id, result_dir, deriv_pipe_dir,
     inputnode.inputs.MELODICmix = MELODICmix
     inputnode.inputs.AROMAnoiseICs = AROMAnoiseICs
 
+    # workhorse workflow
     derive_residuals_wf = init_derive_residuals_wf(smooth=smooth,
                                                    confound_names=confound_names,
                                                    regfilt=regfilt,
                                                    lp=low_pass)
+    # change name of resid.nii.gz
+    rename = pe.Node(Rename(format_string="sub-%(subject_id)s_ses-%(ses_id)s_task-%(task_id)s_bold_clean.nii.gz"),
+                     name='rename')
+    rename.inputs.subject_id = subject_id
+    rename.inputs.task_id = task_id
+    rename.inputs.ses_id = ses_id
+
     single_subject_wf.connect([
         (inputnode, derive_residuals_wf, [('bold_preproc', 'inputnode.bold_preproc'),
                                           ('bold_mask', 'inputnode.bold_mask'),
                                           ('confounds', 'inputnode.confounds'),
                                           ('MELODICmix', 'inputnode.MELODICmix'),
                                           ('AROMAnoiseICs', 'inputnode.AROMAnoiseICs')]),
-        (derive_residuals_wf, outputnode, [('outputnode.bold_resid', 'bold_resid')]),
+        (derive_residuals_wf, rename, [('outputnode.bold_resid', 'in_file')]),
+        (rename, outputnode, [('out_file', 'bold_resid')]),
         (outputnode, datasink, [('bold_resid', subject_outdir)]),
     ])
 
@@ -492,6 +502,7 @@ def init_derive_residuals_wf(name='derive_residuals_wf', t_r=2.0,
                                                          'lp'],
                                             output_names=['nii_resid'],
                                             function=remove_confounds))
+
     # Predefined attributes
     calc_resid.inputs.t_r = t_r
     calc_resid.inputs.confound_names = confound_names
