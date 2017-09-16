@@ -10,12 +10,8 @@ that FMRIPREP doesn't complete, and derives standardized residuals from bold.
 from __future__ import print_function, division, absolute_import, unicode_literals
 import argparse
 import os
-import pdb
 from glob import glob
 import uuid
-# from niworkflows.nipype import config, logging
-# config.enable_debug_mode()
-# logging.update_logging(config)
 from copy import deepcopy
 from time import strftime
 from bids.grabbids import BIDSLayout
@@ -27,13 +23,11 @@ from niworkflows.nipype.interfaces.fsl import ImageStats, MultiImageMaths, SUSAN
 from niworkflows.nipype.interfaces.fsl.utils import FilterRegressor
 from niworkflows.nipype.interfaces.fsl.maths import MeanImage
 from niworkflows.nipype.interfaces.utility import Function
-from nilearn.image import clean_img
-import nibabel as nib
-import pandas as pd
+"""
 ################################################################
 #########################   GLOBAL   ###########################
 ################################################################
-
+"""
 # modified from: https://github.com/INCF/pybids/blob/master/bids/grabbids/config/bids.json
 bids_deriv_config = {
                 "entities": [
@@ -103,14 +97,18 @@ bids_deriv_config = {
                     }
                 ]
             }
-
+"""
 ################################################################
 ################################################################
 ################################################################
-
+"""
+"""
 ################################################################
 #######################  SETUP/RUN   ###########################
 ################################################################
+"""
+
+
 def init_nuisance_regression_wf(confound_names, deriv_pipe_dir, low_pass,
                                 subject_list, work_dir, result_dir,
                                 ses_id, task_id, space, variant, res,
@@ -183,9 +181,11 @@ def init_nuisance_regression_wf(confound_names, deriv_pipe_dir, low_pass,
         preproc_list = data_layout.get(**preproc_query)
 
         if not preproc_list:
-            raise Exception("No preproc files were found for participant {}".format(subject_id))
+            raise Exception('No preproc files were found for '
+                            'participant {}'.format(subject_id))
         elif len(preproc_list) > 1:
-            raise Exception("Too many preproc files were found for participant {}".format(subject_id))
+            raise Exception('Too many preproc files were found '
+                            'for participant {}'.format(subject_id))
         else:
             preproc_file = preproc_list[0]
 
@@ -209,9 +209,11 @@ def init_nuisance_regression_wf(confound_names, deriv_pipe_dir, low_pass,
         brainmask_list = data_layout.get(**brainmask_query)
 
         if not brainmask_list:
-            raise Exception("No brainmask files were found for participant {}".format(subject_id))
+            raise Exception('No brainmask files were found for '
+                            'participant {}'.format(subject_id))
         elif len(brainmask_list) > 1:
-            raise Exception("Too many brainmask files were found for participant {}".format(subject_id))
+            raise Exception('Too many brainmask files were found '
+                            'for participant {}'.format(subject_id))
         else:
             brainmask_file = brainmask_list[0]
 
@@ -231,9 +233,11 @@ def init_nuisance_regression_wf(confound_names, deriv_pipe_dir, low_pass,
         confounds_list = data_layout.get(**confounds_query)
 
         if not confounds_list:
-            raise Exception("No confound files were found for participant {}".format(subject_id))
+            raise Exception('No confound files were found for '
+                            'participant {}'.format(subject_id))
         elif len(confounds_list) > 1:
-            raise Exception("Too many confound files were found for participant {}".format(subject_id))
+            raise Exception('Too many confound files were found '
+                            'for participant {}'.format(subject_id))
         else:
             confounds_file = confounds_list[0]
 
@@ -253,9 +257,11 @@ def init_nuisance_regression_wf(confound_names, deriv_pipe_dir, low_pass,
         MELODICmix_list = data_layout.get(**MELODICmix_query)
 
         if not MELODICmix_list:
-            raise Exception("No MELODICmix files were found for participant {}".format(subject_id))
+            raise Exception('No MELODICmix files were found for '
+                            'participant {}'.format(subject_id))
         elif len(MELODICmix_list) > 1:
-            raise Exception("Too many MELODICmix files were found for participant {}".format(subject_id))
+            raise Exception('Too many MELODICmix files were found '
+                            'for participant {}'.format(subject_id))
         else:
             MELODICmix_file = MELODICmix_list[0]
 
@@ -275,9 +281,11 @@ def init_nuisance_regression_wf(confound_names, deriv_pipe_dir, low_pass,
         AROMAnoiseICs_list = data_layout.get(**AROMAnoiseICs_query)
 
         if not AROMAnoiseICs_list:
-            raise Exception("No AROMAnoiseICs files were found for participant {}".format(subject_id))
+            raise Exception('No AROMAnoiseICs files were found for '
+                            'participant {}'.format(subject_id))
         elif len(AROMAnoiseICs_list) > 1:
-            raise Exception("Too many AROMAnoiseICs files were found for participant {}".format(subject_id))
+            raise Exception('Too many AROMAnoiseICs files were found '
+                            'for participant {}'.format(subject_id))
         else:
             AROMAnoiseICs_file = AROMAnoiseICs_list[0]
 
@@ -299,8 +307,7 @@ def init_nuisance_regression_wf(confound_names, deriv_pipe_dir, low_pass,
                                                    space=space,
                                                    subject_id=subject_id,
                                                    task_id=task_id,
-                                                   variant=variant
-        )
+                                                   variant=variant)
 
         single_subject_wf.config['execution']['crashdump_dir'] = (
             os.path.join(result_dir, "sub-" + subject_id, 'log', run_uuid)
@@ -393,13 +400,18 @@ def init_single_subject_wf(subject_id, ses_id, result_dir, deriv_pipe_dir,
 
     return single_subject_wf
 
-################################################################
-################################################################
-################################################################
 
+"""
+################################################################
+################################################################
+################################################################
+"""
+
+"""
 ################################################################
 ############   PREPROCESSING/NUISANCE REGRESSION   #############
 ################################################################
+"""
 
 
 def init_derive_residuals_wf(name='derive_residuals_wf', t_r=2.0,
@@ -582,14 +594,20 @@ def init_smooth_wf(name='smooth_wf', smooth=None):
 
     return workflow
 
-################################################################
-################################################################
-################################################################
 
+"""
+################################################################
+################################################################
+################################################################
+"""
 
+"""
 #################################################################
 #####################   USER INTERFACE   ########################
 #################################################################
+"""
+
+
 def get_parser():
     """Build parser object"""
     parser = argparse.ArgumentParser(description='NuisanceRegression BIDS arguments')
@@ -658,7 +676,8 @@ def main():
     # Set up main directories
     output_dir = os.path.abspath(opts.output_dir)
     result_dir = os.path.join(output_dir,
-        'NuisanceRegression{}{}{}'.format(smooth_name, lp_name, regfilt_name))
+                    'NuisanceRegression{}{}{}'.format(smooth_name, lp_name, regfilt_name)
+                 )
     log_dir = os.path.join(result_dir, 'logs')
     work_dir = os.path.abspath(opts.work_dir)
 
@@ -713,7 +732,10 @@ def main():
     )
     if opts.graph:
         nuisance_regression_wf.write_graph(graph2use='colored',
-            dotfilename=os.path.join(work_dir,'graph_colored.dot'))
+                                           dotfilename=os.path.join(work_dir,
+                                                                    'graph_colored.dot'
+                                                                   )
+                                          )
 
     try:
         nuisance_regression_wf.run(**plugin_settings)
@@ -722,5 +744,6 @@ def main():
         raise(e)
 
 
+# Let's you run the script directly (as opposed to importing it)
 if __name__ == '__main__':
     main()
