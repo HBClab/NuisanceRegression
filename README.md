@@ -13,13 +13,16 @@ OS Dependencies:
 - graphviz
 
 UBUNTU:
+
 ```sudo apt install graphviz```
 
-MAC OSX (using homebrew)
+MAC OSX (using homebrew):
+
 ```brew install graphviz```
 
 ## Usage
-```usage: preprocess.py [-h]
+```
+usage: preprocess.py [-h]
                      [--participant_label PARTICIPANT_LABEL [PARTICIPANT_LABEL ...]]
                      [-w WORK_DIR] [-sm SMOOTH] [-l LOW_PASS] [-f]
                      [-c CONFOUNDS] [-t TASK_ID] [-sp SPACE]
@@ -68,8 +71,10 @@ Options for selecting images:
   --ses SES             select a session to analyze
 
 Options for miscellaneous abilities:
-  --graph               generates a graph png of the workflow```
+  --graph               generates a graph png of the workflow
+```
   
 Example Call:
+
 ```./preprocess.py ~/devel/tmp/sample_bids/derivatives/fmriprep ~/devel/tmp/sample_bids/derivatives -w ~/devel/tmp/work -sm 6 -l 0.1 --exclude_variant```
 
