@@ -33,6 +33,8 @@ import pandas as pd
 ################################################################
 #########################   GLOBAL   ###########################
 ################################################################
+
+# modified from: https://github.com/INCF/pybids/blob/master/bids/grabbids/config/bids.json
 bids_deriv_config = {
                 "entities": [
                     {
@@ -113,6 +115,44 @@ def init_nuisance_regression_wf(confound_names, deriv_pipe_dir, low_pass,
                                 subject_list, work_dir, result_dir,
                                 ses_id, task_id, space, variant, res,
                                 smooth, run_id,  regfilt, run_uuid):
+    r"""
+    This workflow organizes the execution of preprocess, with a sub-workflow for
+    each subject.
+
+    Parameters
+
+        confound_names : list of str or None
+            Column names from FMRIPREP's confounds tsv that were selected for
+            nuisance regression
+        deriv_pipe_dir : str
+            The absolute path to the FMRIPREP directory
+        low_pass : float or None
+            The frequency to set low pass filter (in Hz)
+        subject_list : list of str
+            List of subject labels
+        work_dir : str
+            The absolute path to execute workflows/nodes
+        result_dir : str
+            The absolute path to the base directory where results will be stored
+        ses_id : str
+            Session id to analyze
+        task_id : str
+            Task id to analyze
+        space : str
+            Output Space from FMRIPREP to analyze
+        variant : str
+            Output variant from FMRIPREP to analyze
+        res : str
+            Output resolution from FMRIPREP to analyze
+        smooth : float or None
+            smoothing kernel to apply to image
+        run_id : str
+            run number to analyze
+        regfilt : bool
+            Selects to run FilterRegressor from the output from ICA-AROMA
+        run_uuid :
+            Unique identifier for execution instance
+    """
 
     nuisance_regression_wf = pe.Workflow(name='nuisance_regression_wf')
     # set where we put intermediate files/where we do processing
@@ -241,7 +281,6 @@ def init_nuisance_regression_wf(confound_names, deriv_pipe_dir, low_pass,
         else:
             AROMAnoiseICs_file = AROMAnoiseICs_list[0]
 
-        #pdb.set_trace()
         single_subject_wf = init_single_subject_wf(AROMAnoiseICs=AROMAnoiseICs_file,
                                                    brainmask=brainmask_file,
                                                    confounds=confounds_file,
@@ -277,6 +316,48 @@ def init_single_subject_wf(subject_id, ses_id, result_dir, deriv_pipe_dir,
                            confound_names, confounds, task_id, space, variant, res,
                            run_uuid, smooth, low_pass, regfilt, run_id, preproc, brainmask,
                            AROMAnoiseICs, MELODICmix):
+    r"""
+    This workflow organizes the execution of a single subject.
+
+    Parameters
+
+        confound_names : list of str or None
+            Column names from FMRIPREP's confounds tsv that were selected for
+            nuisance regression
+        deriv_pipe_dir : str
+            The absolute path to the FMRIPREP directory
+        low_pass : float or None
+            The frequency to set low pass filter (in Hz)
+        subject_id : str
+            subject id to analyze
+        work_dir : str
+            The absolute path to execute workflows/nodes
+        result_dir : str
+            The absolute path to the base directory where results will be stored
+        ses_id : str
+            Session id to analyze
+        task_id : str
+            Task id to analyze
+        space : str
+            Output Space from FMRIPREP to analyze
+        variant : str
+            Output variant from FMRIPREP to analyze
+        res : str
+            Output resolution from FMRIPREP to analyze
+        smooth : float or None
+            smoothing kernel to apply to image (mm)
+        run_id : str
+            run number to analyze
+        regfilt : bool
+            Selects to run FilterRegressor from the output from ICA-AROMA
+        run_uuid : str
+            Unique identifier for execution instance
+        AROMAnoiseICs : str
+            Absolute path to csv file indicating noise ICs
+        MELODICmix : str
+            Absolute path to tsv listing all ICs
+    """
+
     single_subject_wf = pe.Workflow(name='single_subject_wf')
     inputnode = pe.Node(IdentityInterface(
         fields=['bold_preproc', 'bold_mask', 'confounds', 'MELODICmix', 'AROMAnoiseICs']),
@@ -324,6 +405,25 @@ def init_single_subject_wf(subject_id, ses_id, result_dir, deriv_pipe_dir,
 def init_derive_residuals_wf(name='derive_residuals_wf', t_r=2.0,
                              smooth=None, confound_names=None,
                              regfilt=False, lp=None):
+    r"""
+    This workflow derives the residual image from the preprocessed FMRIPREP image.
+
+    Parameters
+
+        name : str
+            name of the workflow
+        t_r : float
+            time of repetition to collect a volume
+        smooth : float or None
+            smoothing kernel to apply to image (mm)
+        confound_names : list of str or None
+            Column names from FMRIPREP's confounds tsv that were selected for
+            nuisance regression
+        regfilt : bool
+            Selects to run FilterRegressor from the output from ICA-AROMA
+        lp : float or None
+            The frequency to set low pass filter (in Hz)
+    """
     # Steps
     # 1) brain mask
     # 2) smooth (optional)
@@ -614,7 +714,7 @@ def main():
     if opts.graph:
         nuisance_regression_wf.write_graph(graph2use='colored',
             dotfilename=os.path.join(work_dir,'graph_colored.dot'))
-            
+
     try:
         nuisance_regression_wf.run(**plugin_settings)
     except RuntimeError as e:
