@@ -281,7 +281,7 @@ class DerivativesDataSink(SimpleInterface):
     """
     input_spec = DerivativesDataSinkInputSpec
     output_spec = DerivativesDataSinkOutputSpec
-    out_path_base = "test"
+    out_path_base = "NuisanceRegression"
     _always_run = True
 
     def __init__(self, out_path_base=None, **inputs):
@@ -495,6 +495,7 @@ def init_nuisance_regression_wf(confound_names, deriv_pipe_dir, low_pass,
 
         # make sure the lists are the same length
         # pray to god that they are in the same order?
+        # ^they appear to be in the same order
         length = len(subject_data['preproc'])
         print('preproc:{}'.format(str(length)))
         print('confounds:{}'.format(str(len(subject_data['confounds']))))
@@ -661,8 +662,9 @@ def init_derivatives_wf(result_dir, name='nuisance_regression_wf'):
     inputnode = pe.Node(IdentityInterface(fields=['source_file', 'bold_clean']),
         name='inputnode')
 
-    ds_bold_clean = pe.Node(DerivativesDataSink(base_directory=result_dir,
-                                                suffix='clean'),
+    ds_bold_clean = pe.Node(DerivativesDataSink(base_directory=os.path.dirname(result_dir),
+                                                suffix='clean',
+                                                out_path_base=os.path.basename(result_dir)),
                             name='ds_bold_clean')
 
     workflow.connect([
