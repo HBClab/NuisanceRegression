@@ -266,10 +266,10 @@ def init_nuisance_regression_wf(confound_names, deriv_pipe_dir, low_pass,
         single_subject_wf.config['execution']['crashdump_dir'] = (
             os.path.join(result_dir, "sub-" + subject_id, 'log', run_uuid)
         )
-        single_subject_wf.base_dir=os.path.join(work_dir,'sub'+subject_id)
         for node in single_subject_wf._get_all_nodes():
             node.config = deepcopy(single_subject_wf.config)
 
+        nuisance_regression_wf.add_nodes([single_subject_wf])
     return nuisance_regression_wf
 
 
@@ -324,6 +324,12 @@ def init_single_subject_wf(subject_id, ses_id, result_dir, deriv_pipe_dir,
 def init_derive_residuals_wf(name='derive_residuals_wf', t_r=2.0,
                              smooth=None, confound_names=None,
                              regfilt=False, lp=None):
+    # Steps
+    # 1) brain mask
+    # 2) smooth (optional)
+    # 3) regfilt (optional)
+    # 4) remove residuals
+
     inputnode = pe.Node(IdentityInterface(
         fields=['bold_preproc', 'bold_mask', 'confounds', 'MELODICmix',
                 'AROMAnoiseICs']),
@@ -358,12 +364,6 @@ def init_derive_residuals_wf(name='derive_residuals_wf', t_r=2.0,
         nib.save(cleaned_img, resid_nii)
 
         return resid_nii
-
-    # Steps
-    # 1) brain mask
-    # 2) smooth (optional)
-    # 3) regfilt (optional)
-    # 4) remove residuals
 
     # brain mask node
     mask_bold = pe.Node(MultiImageMaths(op_string='-mul %s'), name='mask_bold')
@@ -528,6 +528,10 @@ def get_parser():
                             help='select a run to analyze')
     image_opts.add_argument('--ses', action='store', help='select a session to analyze')
 
+    # misc options
+    misc_opts = parser.add_argument_group('Options for miscellaneous abilities')
+    misc_opts.add_argument('--graph', action='store_true', default=False,
+                           help='generates a graph png of the workflow')
     return parser
 
 
@@ -607,10 +611,11 @@ def main():
         variant=opts.variant,
         work_dir=work_dir,
     )
-
-
+    if opts.graph:
+        nuisance_regression_wf.write_graph(graph2use='colored',
+            dotfilename=os.path.join(work_dir,'graph_colored.dot'))
+            
     try:
-        #pdb.set_trace()
         nuisance_regression_wf.run(**plugin_settings)
     except RuntimeError as e:
         print('ERROR!')
@@ -619,6 +624,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-
-# import NiBetaSeries.workflows.preprocess as proc
-# test_wf = proc.init_derive_residuals_wf(smooth=6,regfilt=True,lp=0.1)
