@@ -8,27 +8,46 @@ that FMRIPREP doesn't complete, and derives standardized residuals from bold.
 '''
 # Things I should learn more about:
 # regex
+# Incorporate smarter way of getting bids data
+# https://github.com/poldracklab/fmriprep/blob/master/fmriprep/utils/bids.py
 from __future__ import print_function, division, absolute_import, unicode_literals
 import argparse
 import os
+import re
 from glob import glob
+import gzip
+from shutil import copy, copyfileobj
 import uuid
 from copy import deepcopy
 from time import strftime
 from bids.grabbids import BIDSLayout
-import niworkflows.nipype.interfaces.io as nio
 import niworkflows.nipype.pipeline.engine as pe
 from niworkflows.nipype import config as ncfg
-from niworkflows.nipype.interfaces.utility import IdentityInterface, Rename
+from niworkflows.nipype.interfaces.utility import IdentityInterface
 from niworkflows.nipype.interfaces.fsl import ImageStats, MultiImageMaths, SUSAN
 from niworkflows.nipype.interfaces.fsl.utils import FilterRegressor
 from niworkflows.nipype.interfaces.fsl.maths import MeanImage
 from niworkflows.nipype.interfaces.utility import Function
+# interface
+from niworkflows.nipype import logging
+from niworkflows.nipype.interfaces.base import (
+    traits, isdefined, TraitedSpec, BaseInterfaceInputSpec,
+    File, Directory, InputMultiPath, OutputMultiPath, Str
+)
+
+from niworkflows.interfaces.base import SimpleInterface
+
 """
 ################################################################
 #########################   GLOBAL   ###########################
 ################################################################
 """
+# taken from https://github.com/poldracklab/fmriprep/blob/master/fmriprep/interfaces/bids.py#L44
+BIDS_NAME = re.compile(
+    '^(.*\/)?(?P<subject_id>sub-[a-zA-Z0-9]+)(_(?P<session_id>ses-[a-zA-Z0-9]+))?'
+    '(_(?P<task_id>task-[a-zA-Z0-9]+))?(_(?P<acq_id>acq-[a-zA-Z0-9]+))?'
+    '(_(?P<rec_id>rec-[a-zA-Z0-9]+))?(_(?P<run_id>run-[a-zA-Z0-9]+))?')
+
 # modified from: https://github.com/INCF/pybids/blob/master/bids/grabbids/config/bids.json
 bids_deriv_config = {
                 "entities": [
@@ -103,9 +122,314 @@ bids_deriv_config = {
 ################################################################
 ################################################################
 """
+
 """
 ################################################################
-#######################  SETUP/RUN   ###########################
+######################   Interfaces   ##########################
+################################################################
+"""
+
+
+class FileNotFoundError(IOError):
+    pass
+
+
+class BIDSInfoInputSpec(BaseInterfaceInputSpec):
+    in_file = File(mandatory=True, desc='input file, part of a BIDS tree')
+
+
+class BIDSInfoOutputSpec(TraitedSpec):
+    subject_id = traits.Str()
+    session_id = traits.Str()
+    task_id = traits.Str()
+    acq_id = traits.Str()
+    rec_id = traits.Str()
+    run_id = traits.Str()
+
+
+class BIDSInfo(SimpleInterface):
+    """
+    Extract metadata from a BIDS-conforming filename
+    This interface uses only the basename, not the path, to determine the
+    subject, session, task, run, acquisition or reconstruction.
+    >>> from fmriprep.interfaces import BIDSInfo
+    >>> from fmriprep.utils.bids import collect_data
+    >>> bids_info = BIDSInfo()
+    >>> bids_info.inputs.in_file = collect_data('ds114', '01')[0]['bold'][0]
+    >>> bids_info.inputs.in_file  # doctest: +ELLIPSIS
+    '.../ds114/sub-01/ses-retest/func/sub-01_ses-retest_task-covertverbgeneration_bold.nii.gz'
+    >>> res = bids_info.run()
+    >>> res.outputs
+    <BLANKLINE>
+    acq_id = <undefined>
+    rec_id = <undefined>
+    run_id = <undefined>
+    session_id = ses-retest
+    subject_id = sub-01
+    task_id = task-covertverbgeneration
+    <BLANKLINE>
+    """
+    input_spec = BIDSInfoInputSpec
+    output_spec = BIDSInfoOutputSpec
+
+    def _run_interface(self, runtime):
+        match = BIDS_NAME.search(self.inputs.in_file)
+        params = match.groupdict() if match is not None else {}
+        self._results = {key: val for key, val in list(params.items())
+                         if val is not None}
+        return runtime
+
+
+class BIDSDataGrabberInputSpec(BaseInterfaceInputSpec):
+    subject_data = traits.Dict(Str, traits.Any)
+    subject_id = Str()
+
+
+class BIDSDataGrabberOutputSpec(TraitedSpec):
+    out_dict = traits.Dict(desc='output data structure')
+    preproc = OutputMultiPath(desc='output preproc functional images')
+    mask = OutputMultiPath(desc='output masks for functional images')
+    MELODICmix = OutputMultiPath(desc='output MELODICmix')
+    AROMAnoiseICs = OutputMultiPath(desc='output AROMAnoiseICs')
+    confounds = OutputMultiPath(desc='output confounds')
+
+
+class BIDSDataGrabber(SimpleInterface):
+    """
+    Collect files from a BIDS directory structure
+    >>> from fmriprep.interfaces import BIDSDataGrabber
+    >>> from fmriprep.utils.bids import collect_data
+    >>> bids_src = BIDSDataGrabber(anat_only=False)
+    >>> bids_src.inputs.subject_data = collect_data('ds114', '01')[0]
+    >>> bids_src.inputs.subject_id = 'ds114'
+    >>> res = bids_src.run()
+    >>> res.outputs.t1w  # doctest: +ELLIPSIS +NORMALIZE_WHITESPACE
+    ['.../ds114/sub-01/ses-retest/anat/sub-01_ses-retest_T1w.nii.gz',
+     '.../ds114/sub-01/ses-test/anat/sub-01_ses-test_T1w.nii.gz']
+    """
+    input_spec = BIDSDataGrabberInputSpec
+    output_spec = BIDSDataGrabberOutputSpec
+
+    def __init__(self, *args, **kwargs):
+        super(BIDSDataGrabber, self).__init__(*args, **kwargs)
+
+    def _run_interface(self, runtime):
+        bids_dict = self.inputs.subject_data
+
+        self._results['out_dict'] = bids_dict
+        self._results.update(bids_dict)
+
+        if not bids_dict['preproc']:
+            raise FileNotFoundError('No preproc images found for subject sub-{}'.format(
+                self.inputs.subject_id))
+
+        if not bids_dict['brainmask']:
+            raise FileNotFoundError('No brainmasks found for subject sub-{}'.format(
+                self.inputs.subject_id))
+
+        if not bids_dict['MELODICmix']:
+            raise FileNotFoundError('MELODICmix not found for subject sub-{}'.format(
+                self.inputs.subject_id))
+
+        if not bids_dict['AROMAnoiseICs']:
+            raise FileNotFoundError('MELODICmix not found for subject sub-{}'.format(
+                self.inputs.subject_id))
+
+        if not bids_dict['confounds']:
+            raise FileNotFoundError('confounds not found for subject sub-{}'.format(
+                self.inputs.subject_id))
+
+        for imtype in ['preproc', 'brainmask', 'MELODICmix', 'AROMAnoiseICs', 'confounds']:
+            if not bids_dict[imtype]:
+                raise ValueError('Could not not find some files for sub-{}'.format(self.inputs.subject_id))
+                # LOGGER.warn('No \'{}\' images found for sub-{}'.format(
+                # imtype, self.inputs.subject_id))
+
+        return runtime
+
+
+class DerivativesDataSinkInputSpec(BaseInterfaceInputSpec):
+    base_directory = traits.Directory(
+        desc='Path to the base directory for storing data.')
+    in_file = InputMultiPath(File(exists=True), mandatory=True,
+                             desc='the object to be saved')
+    source_file = File(exists=False, mandatory=True, desc='the input func file')
+    suffix = traits.Str('', mandatory=True, desc='suffix appended to source_file')
+    extra_values = traits.List(traits.Str)
+
+
+class DerivativesDataSinkOutputSpec(TraitedSpec):
+    out_file = OutputMultiPath(File(exists=True, desc='written file path'))
+
+
+class DerivativesDataSink(SimpleInterface):
+    """
+    Saves the `in_file` into a BIDS-Derivatives folder provided
+    by `base_directory`, given the input reference `source_file`.
+    >>> import tempfile
+    >>> from fmriprep.utils.bids import collect_data
+    >>> tmpdir = tempfile.mkdtemp()
+    >>> tmpfile = os.path.join(tmpdir, 'a_temp_file.nii.gz')
+    >>> open(tmpfile, 'w').close()  # "touch" the file
+    >>> dsink = DerivativesDataSink(base_directory=tmpdir)
+    >>> dsink.inputs.in_file = tmpfile
+    >>> dsink.inputs.source_file = collect_data('ds114', '01')[0]['t1w'][0]
+    >>> dsink.inputs.suffix = 'target-mni'
+    >>> res = dsink.run()
+    >>> res.outputs.out_file  # doctest: +ELLIPSIS
+    '.../fmriprep/sub-01/ses-retest/anat/sub-01_ses-retest_T1w_target-mni.nii.gz'
+    """
+    input_spec = DerivativesDataSinkInputSpec
+    output_spec = DerivativesDataSinkOutputSpec
+    out_path_base = "test"
+    _always_run = True
+
+    def __init__(self, out_path_base=None, **inputs):
+        super(DerivativesDataSink, self).__init__(**inputs)
+        self._results['out_file'] = []
+        if out_path_base:
+            self.out_path_base = out_path_base
+
+    def _run_interface(self, runtime):
+        src_fname, _ = _splitext(self.inputs.source_file)
+        _, ext = _splitext(self.inputs.in_file[0])
+        compress = ext == '.nii'
+        if compress:
+            ext = '.nii.gz'
+
+        m = BIDS_NAME.search(src_fname)
+
+        # TODO this quick and dirty modality detection needs to be implemented
+        # correctly
+        mod = 'func'
+
+        base_directory = os.getcwd()
+        if isdefined(self.inputs.base_directory):
+            base_directory = os.path.abspath(self.inputs.base_directory)
+
+        out_path = '{}/{subject_id}'.format(self.out_path_base, **m.groupdict())
+        if m.groupdict().get('session_id') is not None:
+            out_path += '/{session_id}'.format(**m.groupdict())
+        out_path += '/{}'.format(mod)
+
+        out_path = os.path.join(base_directory, out_path)
+        if not os.path.exists(out_path):
+            os.makedirs(out_path)
+
+        base_fname = os.path.join(out_path, src_fname)
+
+        formatstr = '{bname}_{suffix}{ext}'
+        if len(self.inputs.in_file) > 1 and not isdefined(self.inputs.extra_values):
+            formatstr = '{bname}_{suffix}{i:04d}{ext}'
+
+        for i, fname in enumerate(self.inputs.in_file):
+            out_file = formatstr.format(
+                bname=base_fname,
+                suffix=self.inputs.suffix,
+                i=i,
+                ext=ext)
+            if isdefined(self.inputs.extra_values):
+                out_file = out_file.format(extra_value=self.inputs.extra_values[i])
+            self._results['out_file'].append(out_file)
+            if compress:
+                with open(fname, 'rb') as f_in:
+                    with gzip.open(out_file, 'wb') as f_out:
+                        copyfileobj(f_in, f_out)
+            else:
+                copy(fname, out_file)
+
+        return runtime
+
+
+def _splitext(fname):
+    fname, ext = os.path.splitext(os.path.basename(fname))
+    if ext == '.gz':
+        fname, ext2 = os.path.splitext(fname)
+        ext = ext2 + ext
+    return fname, ext
+
+
+"""
+################################################################
+################################################################
+################################################################
+"""
+"""
+################################################################
+#########################   UTILS   ############################
+################################################################
+"""
+
+
+def collect_data(layout, participant_label, task=None, run=None, space=None):
+    """
+    Uses grabbids to retrieve the input data for a given participant
+    >>> bids_root, _ = collect_data('ds054', '100185')
+    >>> bids_root['fmap']  # doctest: +ELLIPSIS
+    ['.../ds054/sub-100185/fmap/sub-100185_magnitude1.nii.gz', \
+'.../ds054/sub-100185/fmap/sub-100185_magnitude2.nii.gz', \
+'.../ds054/sub-100185/fmap/sub-100185_phasediff.nii.gz']
+    >>> bids_root['bold']  # doctest: +ELLIPSIS
+    ['.../ds054/sub-100185/func/sub-100185_task-machinegame_run-01_bold.nii.gz', \
+'.../ds054/sub-100185/func/sub-100185_task-machinegame_run-02_bold.nii.gz', \
+'.../ds054/sub-100185/func/sub-100185_task-machinegame_run-03_bold.nii.gz', \
+'.../ds054/sub-100185/func/sub-100185_task-machinegame_run-04_bold.nii.gz', \
+'.../ds054/sub-100185/func/sub-100185_task-machinegame_run-05_bold.nii.gz', \
+'.../ds054/sub-100185/func/sub-100185_task-machinegame_run-06_bold.nii.gz']
+    >>> bids_root['sbref']  # doctest: +ELLIPSIS
+    ['.../ds054/sub-100185/func/sub-100185_task-machinegame_run-01_sbref.nii.gz', \
+'.../ds054/sub-100185/func/sub-100185_task-machinegame_run-02_sbref.nii.gz', \
+'.../ds054/sub-100185/func/sub-100185_task-machinegame_run-03_sbref.nii.gz', \
+'.../ds054/sub-100185/func/sub-100185_task-machinegame_run-04_sbref.nii.gz', \
+'.../ds054/sub-100185/func/sub-100185_task-machinegame_run-05_sbref.nii.gz', \
+'.../ds054/sub-100185/func/sub-100185_task-machinegame_run-06_sbref.nii.gz']
+    >>> bids_root['t1w']  # doctest: +ELLIPSIS
+    ['.../ds054/sub-100185/anat/sub-100185_T1w.nii.gz']
+    >>> bids_root['t2w']  # doctest: +ELLIPSIS
+    []
+    """
+    queries = {
+        'preproc': {'subject': participant_label, 'modality': 'func', 'type': 'preproc',
+                 'extensions': ['nii', 'nii.gz']},
+        'brainmask': {'subject': participant_label, 'type': 'brainmask',
+                  'extensions': ['nii', 'nii.gz']},
+        'AROMAnoiseICs': {'subject': participant_label, 'modality': 'func', 'type': 'AROMAnoiseICs',
+                'extensions': '.csv'},
+        'MELODICmix': {'subject': participant_label, 'modality': 'func', 'type': 'MELODICmix',
+                'extensions': 'tsv'},
+        'confounds': {'subject': participant_label, 'modality': 'func', 'type': 'confounds',
+                'extensions': 'tsv'},
+    }
+
+    if task:
+        queries['preproc']['task'] = task
+        queries['brainmask']['task'] = task
+        queries['AROMAnoiseICs']['task'] = task
+        queries['MELODICmix']['task'] = task
+        queries['confounds']['task'] = task
+    if run:
+        queries['preproc']['run'] = run
+        queries['brainmask']['run'] = run
+        queries['AROMAnoiseICs']['run'] = run
+        queries['MELODICmix']['run'] = run
+        queries['confounds']['run'] = run
+    if space:
+        queries['preproc']['space'] = space
+        queries['brainmask']['space'] = space
+
+
+    return {modality: [x.filename for x in layout.get(**query)]
+            for modality, query in queries.items()}
+
+"""
+################################################################
+################################################################
+################################################################
+"""
+
+"""
+################################################################
+##########################   BASE   ############################
 ################################################################
 """
 
@@ -113,7 +437,7 @@ bids_deriv_config = {
 def init_nuisance_regression_wf(confound_names, deriv_pipe_dir, low_pass,
                                 subject_list, work_dir, result_dir,
                                 ses_id, task_id, space, variant, res,
-                                smooth, run_id,  regfilt, run_uuid):
+                                smooth, run_id,  regfilt, run_uuid, exclude_variant):
     r"""
     This workflow organizes the execution of preprocess, with a sub-workflow for
     each subject.
@@ -133,11 +457,11 @@ def init_nuisance_regression_wf(confound_names, deriv_pipe_dir, low_pass,
             The absolute path to execute workflows/nodes
         result_dir : str
             The absolute path to the base directory where results will be stored
-        ses_id : str
+        ses_id : str or None
             Session id to analyze
-        task_id : str
+        task_id : str or None
             Task id to analyze
-        space : str
+        space : str or None
             Output Space from FMRIPREP to analyze
         variant : str
             Output variant from FMRIPREP to analyze
@@ -155,149 +479,49 @@ def init_nuisance_regression_wf(confound_names, deriv_pipe_dir, low_pass,
 
     nuisance_regression_wf = pe.Workflow(name='nuisance_regression_wf')
     # set where we put intermediate files/where we do processing
-    nuisance_regression_wf.base_dir = work_dir
+    nuisance_regression_wf.base_dir = os.path.join(work_dir, 'nuisance_regression_work')
     # get a representation of the directory/data structure
-    data_layout = BIDSLayout(deriv_pipe_dir, bids_deriv_config)
+    layout = BIDSLayout(deriv_pipe_dir, config=bids_deriv_config)
 
     for subject_id in subject_list:
-        # get preproc img
-        preproc_query = {
-                         'subject': subject_id,
-                         'task': task_id,
-                         'type': 'preproc',
-                         'return_type': 'file',
-                         'extensions': ['nii', 'nii.gz']
-                        }
-        if ses_id:
-            preproc_query['session'] = ses_id
-        if variant:
-            preproc_query['variant'] = variant
-        if space:
-            preproc_query['space'] = space
-        if res:
-            preproc_query['res'] = res
-        if run_id:
-            preproc_query['run'] = run_id
+        subject_data = collect_data(layout,
+                                    subject_id,
+                                    task=task_id,
+                                    run=run_id,
+                                    space=space)
+        # if you want to avoid using the ICA-AROMA variant
+        if exclude_variant:
+            subject_data['preproc'] = [preproc for preproc in subject_data['preproc'] if not 'variant' in preproc]
 
-        preproc_list = data_layout.get(**preproc_query)
+        # make sure the lists are the same length
+        # pray to god that they are in the same order?
+        length = len(subject_data['preproc'])
+        print('preproc:{}'.format(str(length)))
+        print('confounds:{}'.format(str(len(subject_data['confounds']))))
+        print('brainmask:{}'.format(str(len(subject_data['brainmask']))))
+        print('AROMAnoiseICs:{}'.format(str(len(subject_data['AROMAnoiseICs']))))
+        print('MELODICmix:{}'.format(str(len(subject_data['MELODICmix']))))
+        if any(len(lst) != length for lst in [subject_data['brainmask'],
+                                              subject_data['confounds'],
+                                              subject_data['AROMAnoiseICs'],
+                                              subject_data['MELODICmix']]):
+            raise ValueError('input lists are not the same length!')
 
-        if not preproc_list:
-            raise Exception('No preproc files were found for '
-                            'participant {}'.format(subject_id))
-        elif len(preproc_list) > 1:
-            raise Exception('Too many preproc files were found '
-                            'for participant {}'.format(subject_id))
-        else:
-            preproc_file = preproc_list[0]
+        # if there are multiples, check to see what changes (session, task, run)
 
-        # brainmask
-        brainmask_query = {
-                           'subject': subject_id,
-                           'task': task_id,
-                           'type': 'brainmask',
-                           'return_type': 'file',
-                           'extensions': ['nii', 'nii.gz']
-                          }
-        if ses_id:
-            brainmask_query['session'] = ses_id
-        if space:
-            brainmask_query['space'] = space
-        if res:
-            brainmask_query['res'] = res
-        if run_id:
-            brainmask_query['run'] = run_id
-
-        brainmask_list = data_layout.get(**brainmask_query)
-
-        if not brainmask_list:
-            raise Exception('No brainmask files were found for '
-                            'participant {}'.format(subject_id))
-        elif len(brainmask_list) > 1:
-            raise Exception('Too many brainmask files were found '
-                            'for participant {}'.format(subject_id))
-        else:
-            brainmask_file = brainmask_list[0]
-
-        # confounds
-        confounds_query = {
-                           'subject': subject_id,
-                           'task': task_id,
-                           'type': 'confounds',
-                           'extensions': 'tsv',
-                           'return_type': 'file'
-                          }
-        if ses_id:
-            confounds_query['session'] = ses_id
-        if run_id:
-            confounds_query['run'] = run_id
-
-        confounds_list = data_layout.get(**confounds_query)
-
-        if not confounds_list:
-            raise Exception('No confound files were found for '
-                            'participant {}'.format(subject_id))
-        elif len(confounds_list) > 1:
-            raise Exception('Too many confound files were found '
-                            'for participant {}'.format(subject_id))
-        else:
-            confounds_file = confounds_list[0]
-
-        # confounds
-        MELODICmix_query = {
-                           'subject': subject_id,
-                           'task': task_id,
-                           'type': 'MELODICmix',
-                           'extensions': 'tsv',
-                           'return_type': 'file'
-                          }
-        if ses_id:
-            MELODICmix_query['session'] = ses_id
-        if run_id:
-            MELODICmix_query['run'] = run_id
-
-        MELODICmix_list = data_layout.get(**MELODICmix_query)
-
-        if not MELODICmix_list:
-            raise Exception('No MELODICmix files were found for '
-                            'participant {}'.format(subject_id))
-        elif len(MELODICmix_list) > 1:
-            raise Exception('Too many MELODICmix files were found '
-                            'for participant {}'.format(subject_id))
-        else:
-            MELODICmix_file = MELODICmix_list[0]
-
-        # confounds
-        AROMAnoiseICs_query = {
-                           'subject': subject_id,
-                           'task': task_id,
-                           'type': 'AROMAnoiseICs',
-                           'extensions': 'csv',
-                           'return_type': 'file'
-                          }
-        if ses_id:
-            AROMAnoiseICs_query['session'] = ses_id
-        if run_id:
-            AROMAnoiseICs_query['run'] = run_id
-
-        AROMAnoiseICs_list = data_layout.get(**AROMAnoiseICs_query)
-
-        if not AROMAnoiseICs_list:
-            raise Exception('No AROMAnoiseICs files were found for '
-                            'participant {}'.format(subject_id))
-        elif len(AROMAnoiseICs_list) > 1:
-            raise Exception('Too many AROMAnoiseICs files were found '
-                            'for participant {}'.format(subject_id))
-        else:
-            AROMAnoiseICs_file = AROMAnoiseICs_list[0]
-
-        single_subject_wf = init_single_subject_wf(AROMAnoiseICs=AROMAnoiseICs_file,
-                                                   brainmask=brainmask_file,
-                                                   confounds=confounds_file,
+        # iterables
+        # task [all]
+        # run [all]
+        # session [all]
+        # space [not all], do not include
+        single_subject_wf = init_single_subject_wf(AROMAnoiseICs=subject_data['AROMAnoiseICs'],
+                                                   brainmask=subject_data['brainmask'],
+                                                   confounds=subject_data['confounds'],
                                                    confound_names=confound_names,
                                                    deriv_pipe_dir=deriv_pipe_dir,
                                                    low_pass=low_pass,
-                                                   MELODICmix=MELODICmix_file,
-                                                   preproc=preproc_file,
+                                                   MELODICmix=subject_data['MELODICmix'],
+                                                   preproc=subject_data['preproc'],
                                                    regfilt=regfilt,
                                                    res=res,
                                                    result_dir=result_dir,
@@ -313,6 +537,8 @@ def init_nuisance_regression_wf(confound_names, deriv_pipe_dir, low_pass,
         single_subject_wf.config['execution']['crashdump_dir'] = (
             os.path.join(result_dir, "sub-" + subject_id, 'log', run_uuid)
         )
+        # single_subject_wf.base_dir = os.path.join(work_dir,
+        #                                          'nuisance_regression_work', 'sub-'+subject_id)
         for node in single_subject_wf._get_all_nodes():
             node.config = deepcopy(single_subject_wf.config)
 
@@ -367,35 +593,50 @@ def init_single_subject_wf(subject_id, ses_id, result_dir, deriv_pipe_dir,
     """
 
     single_subject_wf = pe.Workflow(name='single_subject_wf')
+    # import pdb; pdb.set_trace()
+    # tmp = zip(preproc, brainmask, confounds, MELODICmix, AROMAnoiseICs)
+    # print(str(tmp))
     inputnode = pe.Node(IdentityInterface(
         fields=['bold_preproc', 'bold_mask', 'confounds', 'MELODICmix', 'AROMAnoiseICs']),
-        name='inputnode')
+        name='inputnode', synchronize=True,
+        iterables=[('bold_preproc', 'bold_mask', 'confounds', 'MELODICmix', 'AROMAnoiseICs'),
+                   zip(preproc, brainmask, confounds, MELODICmix, AROMAnoiseICs)])
+
+    # inputnode.inputs.bold_preproc = preproc
+    # inputnode.inputs.bold_mask = brainmask
+    # inputnode.inputs.confounds = confounds
+    # inputnode.inputs.MELODICmix = MELODICmix
+    # inputnode.inputs.AROMAnoiseICs = AROMAnoiseICs
+
     outputnode = pe.Node(IdentityInterface(
         fields=['bold_resid']),
         name='outputnode')
 
-    datasink = pe.Node(nio.DataSink(), name='datasink')
-    subject_outdir = "sub-{}.ses-{}.func".format(subject_id, ses_id)
-    datasink.inputs.base_directory = result_dir
+    # datasink = pe.Node(nio.DataSink(), name='datasink')
+    # subject_outdir = "sub-{}.ses-{}.func".format(subject_id, ses_id)
+    # datasink.inputs.base_directory = result_dir
 
+    # below obsolete, changed to iterables
     # Set input nodes
-    inputnode.inputs.bold_preproc = preproc
-    inputnode.inputs.bold_mask = brainmask
-    inputnode.inputs.confounds = confounds
-    inputnode.inputs.MELODICmix = MELODICmix
-    inputnode.inputs.AROMAnoiseICs = AROMAnoiseICs
+    # inputnode.inputs.bold_preproc = preproc
+    # inputnode.inputs.bold_mask = brainmask
+    # inputnode.inputs.confounds = confounds
+    # inputnode.inputs.MELODICmix = MELODICmix
+    # inputnode.inputs.AROMAnoiseICs = AROMAnoiseICs
 
     # workhorse workflow
     derive_residuals_wf = init_derive_residuals_wf(smooth=smooth,
                                                    confound_names=confound_names,
                                                    regfilt=regfilt,
                                                    lp=low_pass)
+
+    derivatives_wf = init_derivatives_wf(result_dir=result_dir)
     # change name of resid.nii.gz
-    rename = pe.Node(Rename(format_string="sub-%(subject_id)s_ses-%(ses_id)s_task-%(task_id)s_bold_clean.nii.gz"),
-                     name='rename')
-    rename.inputs.subject_id = subject_id
-    rename.inputs.task_id = task_id
-    rename.inputs.ses_id = ses_id
+    # rename = pe.Node(Rename(format_string="sub-%(subject_id)s_ses-%(ses_id)s_task-%(task_id)s_bold_clean.nii.gz"),
+    #                 name='rename')
+    # rename.inputs.subject_id = subject_id
+    # rename.inputs.task_id = task_id
+    # rename.inputs.ses_id = ses_id
 
     single_subject_wf.connect([
         (inputnode, derive_residuals_wf, [('bold_preproc', 'inputnode.bold_preproc'),
@@ -403,14 +644,35 @@ def init_single_subject_wf(subject_id, ses_id, result_dir, deriv_pipe_dir,
                                           ('confounds', 'inputnode.confounds'),
                                           ('MELODICmix', 'inputnode.MELODICmix'),
                                           ('AROMAnoiseICs', 'inputnode.AROMAnoiseICs')]),
-        (derive_residuals_wf, rename, [('outputnode.bold_resid', 'in_file')]),
-        (rename, outputnode, [('out_file', 'bold_resid')]),
-        (outputnode, datasink, [('bold_resid', subject_outdir)]),
+        (derive_residuals_wf, outputnode, [('outputnode.bold_resid', 'bold_resid')]),
+        (inputnode, derivatives_wf, [('bold_preproc', 'inputnode.source_file')]),
+        (outputnode, derivatives_wf, [('bold_resid', 'inputnode.bold_clean')]),
     ])
 
     return single_subject_wf
 
 
+def init_derivatives_wf(result_dir, name='nuisance_regression_wf'):
+    """
+    Set up a battery of datasinks to store derivatives in the right location
+    """
+    workflow = pe.Workflow(name=name)
+
+    inputnode = pe.Node(IdentityInterface(fields=['source_file', 'bold_clean']),
+        name='inputnode')
+
+    ds_bold_clean = pe.Node(DerivativesDataSink(base_directory=result_dir,
+                                                suffix='clean'),
+                            name='ds_bold_clean')
+
+    workflow.connect([
+    (inputnode, ds_bold_clean, [('source_file', 'source_file'),
+                                ('bold_clean', 'in_file')])
+    ])
+
+    return workflow
+
+
 """
 ################################################################
 ################################################################
@@ -419,7 +681,7 @@ def init_single_subject_wf(subject_id, ses_id, result_dir, deriv_pipe_dir,
 
 """
 ################################################################
-############   PREPROCESSING/NUISANCE REGRESSION   #############
+##################   NuisanceRegression   ######################
 ################################################################
 """
 
@@ -614,7 +876,7 @@ def init_smooth_wf(name='smooth_wf', smooth=None):
 
 """
 #################################################################
-#####################   USER INTERFACE   ########################
+#################   USER INTERFACE (CLI)   ######################
 #################################################################
 """
 
@@ -638,7 +900,7 @@ def get_parser():
     proc_opts.add_argument('-sm', '--smooth', action='store', type=float,
                            help='select a smoothing kernel (mm)')
     proc_opts.add_argument('-l', '--low_pass', action='store', type=float,
-                           help='low pass filter')
+                           default=None, help='low pass filter')
     proc_opts.add_argument('-f', '--regfilt', action='store_true', default=False,
                            help='Do non-aggressive filtering from ICA-AROMA')
     proc_opts.add_argument('-c', '--confounds', help='The confound column names '
@@ -646,16 +908,19 @@ def get_parser():
     # Image Selection options
     image_opts = parser.add_argument_group('Options for selecting images')
     image_opts.add_argument('-t', '--task_id', action='store',
-                            help='select a specific task to be processed')
+                            default=None, help='select a specific task to be processed')
     image_opts.add_argument('-sp', '--space', action='store',
-                            help='select a bold derivative in a specific space to be used')
+                            default=None, help='select a bold derivative in a specific space to be used')
     image_opts.add_argument('--variant', action='store',
-                            help='select a variant bold to process')
+                            default=None, help='select a variant bold to process')
+    image_opts.add_argument('--exclude_variant', action='store_true',
+                            default=False, help='exclude the variant from FMRIPREP')
     image_opts.add_argument('-r', '--res', action='store',
-                            help='select a resolution to analyze')
+                            default=None, help='select a resolution to analyze')
     image_opts.add_argument('--run', action='store',
-                            help='select a run to analyze')
-    image_opts.add_argument('--ses', action='store', help='select a session to analyze')
+                            default=None, help='select a run to analyze')
+    image_opts.add_argument('--ses', action='store',
+                            default=None, help='select a session to analyze')
 
     # misc options
     misc_opts = parser.add_argument_group('Options for miscellaneous abilities')
@@ -710,6 +975,7 @@ def main():
                     'log_to_file': True},
         'execution': {'crashdump_dir': log_dir,
                       'crashfile_format': 'txt',
+                      'parameterize_dirs': False,
                      },
     })
 
@@ -727,6 +993,7 @@ def main():
     nuisance_regression_wf = init_nuisance_regression_wf(
         confound_names=opts.confounds,
         deriv_pipe_dir=opts.deriv_pipe_dir,
+        exclude_variant=opts.exclude_variant,
         low_pass=opts.low_pass,
         regfilt=opts.regfilt,
         res=opts.res,
@@ -743,10 +1010,7 @@ def main():
     )
     if opts.graph:
         nuisance_regression_wf.write_graph(graph2use='colored',
-                                           dotfilename=os.path.join(work_dir,
-                                                                    'graph_colored.dot'
-                                                                   )
-                                          )
+            dotfilename=os.path.join(work_dir, 'graph_colored.dot'))
 
     try:
         nuisance_regression_wf.run(**plugin_settings)
@@ -754,6 +1018,12 @@ def main():
         print('ERROR!')
         raise(e)
 
+
+"""
+################################################################
+################################################################
+################################################################
+"""
 
 # Let's you run the script directly (as opposed to importing it)
 if __name__ == '__main__':
