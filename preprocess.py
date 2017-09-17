@@ -522,6 +522,7 @@ def init_nuisance_regression_wf(confound_names, deriv_pipe_dir, low_pass,
                                                    deriv_pipe_dir=deriv_pipe_dir,
                                                    low_pass=low_pass,
                                                    MELODICmix=subject_data['MELODICmix'],
+                                                   name='single_subject' + subject_id + '_wf'
                                                    preproc=subject_data['preproc'],
                                                    regfilt=regfilt,
                                                    res=res,
@@ -547,7 +548,7 @@ def init_nuisance_regression_wf(confound_names, deriv_pipe_dir, low_pass,
     return nuisance_regression_wf
 
 
-def init_single_subject_wf(subject_id, ses_id, result_dir, deriv_pipe_dir,
+def init_single_subject_wf(subject_id, name, ses_id, result_dir, deriv_pipe_dir,
                            confound_names, confounds, task_id, space, variant, res,
                            run_uuid, smooth, low_pass, regfilt, run_id, preproc, brainmask,
                            AROMAnoiseICs, MELODICmix):
@@ -593,7 +594,7 @@ def init_single_subject_wf(subject_id, ses_id, result_dir, deriv_pipe_dir,
             Absolute path to tsv listing all ICs
     """
 
-    single_subject_wf = pe.Workflow(name='single_subject_wf')
+    single_subject_wf = pe.Workflow(name=name)
     # import pdb; pdb.set_trace()
     # tmp = zip(preproc, brainmask, confounds, MELODICmix, AROMAnoiseICs)
     # print(str(tmp))
@@ -906,7 +907,8 @@ def get_parser():
     proc_opts.add_argument('-f', '--regfilt', action='store_true', default=False,
                            help='Do non-aggressive filtering from ICA-AROMA')
     proc_opts.add_argument('-c', '--confounds', help='The confound column names '
-                           'that are to be included in nuisance regression')
+                           'that are to be included in nuisance regression',
+                           nargs="+")
     # Image Selection options
     image_opts = parser.add_argument_group('Options for selecting images')
     image_opts.add_argument('-t', '--task_id', action='store',
