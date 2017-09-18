@@ -522,7 +522,7 @@ def init_nuisance_regression_wf(confound_names, deriv_pipe_dir, low_pass,
                                                    deriv_pipe_dir=deriv_pipe_dir,
                                                    low_pass=low_pass,
                                                    MELODICmix=subject_data['MELODICmix'],
-                                                   name='single_subject' + subject_id + '_wf'
+                                                   name='single_subject' + subject_id + '_wf',
                                                    preproc=subject_data['preproc'],
                                                    regfilt=regfilt,
                                                    res=res,
