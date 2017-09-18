@@ -391,7 +391,7 @@ def collect_data(layout, participant_label, task=None, run=None, space=None):
     queries = {
         'preproc': {'subject': participant_label, 'modality': 'func', 'type': 'preproc',
                  'extensions': ['nii', 'nii.gz']},
-        'brainmask': {'subject': participant_label, 'type': 'brainmask',
+        'brainmask': {'subject': participant_label, 'modality': 'func', 'type': 'brainmask',
                   'extensions': ['nii', 'nii.gz']},
         'AROMAnoiseICs': {'subject': participant_label, 'modality': 'func', 'type': 'AROMAnoiseICs',
                 'extensions': '.csv'},
@@ -492,14 +492,19 @@ def init_nuisance_regression_wf(confound_names, deriv_pipe_dir, low_pass,
         # if you want to avoid using the ICA-AROMA variant
         if exclude_variant:
             subject_data['preproc'] = [preproc for preproc in subject_data['preproc'] if not 'variant' in preproc]
+        # if you only want to use a particular variant
+        if variant: 
+            subject_data['preproc'] = [preproc for preproc in subject_data['preproc'] if variant in preproc]
 
         # make sure the lists are the same length
         # pray to god that they are in the same order?
         # ^they appear to be in the same order
         length = len(subject_data['preproc'])
+        print('\n'+subject_id)
         print('preproc:{}'.format(str(length)))
         print('confounds:{}'.format(str(len(subject_data['confounds']))))
         print('brainmask:{}'.format(str(len(subject_data['brainmask']))))
+        print('brainmask:{}'.format(str(subject_data['brainmask'])))
         print('AROMAnoiseICs:{}'.format(str(len(subject_data['AROMAnoiseICs']))))
         print('MELODICmix:{}'.format(str(len(subject_data['MELODICmix']))))
         if any(len(lst) != length for lst in [subject_data['brainmask'],
@@ -991,7 +996,7 @@ def main():
         subject_list = opts.participant_label
     # for all subjects
     else:
-        subject_dirs = glob(os.path.join(opts.deriv_pipe_dir, "sub-*"))
+        subject_dirs = [directory for directory in glob(os.path.join(opts.deriv_pipe_dir, "sub-*")) if os.path.isdir(os.path.join(opts.deriv_pipe_dir, directory))]
         subject_list = [subject_dir.split("-")[-1] for subject_dir in subject_dirs]
 
     nuisance_regression_wf = init_nuisance_regression_wf(
